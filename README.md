@@ -4,7 +4,7 @@ Extract from json and transform into csv.
 
 # Example
 
-  cat data/reviews.json | jq feed.entry | jq csv content.label author.name.label > ios-reviews.csv
+    cat data/reviews.json | jq feed.entry | jq csv content.label author.name.label > ios-reviews.csv
   
 Note the following differences to `jq`:
 - leading `.` is optional
