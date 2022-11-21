@@ -2,11 +2,14 @@
 mod exit_status;
 
 use std::borrow::Cow;
+use std::iter::once;
+use std::ops::Index;
 pub use exit_status::ExitOk;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use crate::Command::{Extract, Keys};
 use anyhow::{Result, anyhow};
+use regex::Regex;
 use serde_json::Value;
 
 
@@ -25,6 +28,7 @@ enum Command {
         keys: Vec<String>
     },
     Keys,
+    Len,
 }
 
 struct Options {
@@ -36,6 +40,8 @@ fn evaluate_command(s: &str) -> Result<Command> {
         Extract { path: s[1..].to_string() }
     } else if s.starts_with("keys") {
         Keys
+    } else if s.starts_with("len") {
+        Command::Len
     } else if s.starts_with("csv") {
         let mut keys = s.split_whitespace().skip(1)
             .filter(|s| !s.is_empty())
@@ -51,44 +57,40 @@ fn evaluate_command(s: &str) -> Result<Command> {
 
 
 fn next_key(s: &str) -> Result<(&str, &str)> {
-    let mut path = s.splitn(2, '.');
-    let key = path.next().ok_or(anyhow!("Invalid path"))?;
-    let rest = path.next().unwrap_or("");
-    Ok((key, rest))
-}
+    if s == "" {
+        return Ok(("", ""));
+    }
+    let idx = s.find(|c| c == '.' || c == '[');
+    let Some(idx) = idx else {
+        return Ok((s, ""));
+    };
+    match s.chars().nth(idx).unwrap() {
+        '.' => {
+            let (key, rest) = s.split_at(idx);
+            Ok((key, &rest[1..]))
+        }
+        '[' => {
+            if idx == 0 {
+                match s.find('.') {
+                    None => Ok((s, "")),
+                    Some(idx)  => {
+                        let (key, rest) = s.split_at(idx);
+                        Ok((key, &rest[1..]))
 
-fn extract(obj: Value, path: &str) -> Result<Value> {
-    match (obj, path) {
-        (obj, path) if path.is_empty() => {
-            Ok(obj)
-        }
-        (Value::Object(mut obj), path) => {
-            let (key, rest) = next_key(path)?;
-            let item = obj.get_mut(key).ok_or(anyhow!("No such key: {}", key))?.take();
-            extract(item, rest)
-        }
-        (Value::Array(mut arr), path ) if path.starts_with("[") => {
-            let (key, rest) = next_key(path)?;
-            if key == "[]" {
-                let vec = arr.into_iter().map(|v| extract(v, rest)).collect::<Result<Vec<_>,_>>()?;
-                Ok(Value::Array(vec))
+                    }
+                }
             } else {
-                let index = key[1..key.len() - 1].parse::<usize>()?;
-                let item = arr.get_mut(index).ok_or(anyhow!("No such index: {}", index))?.take();
-                extract(item, rest)
+                Ok(s.split_at(idx))
             }
         }
-        _ => {
-            Err(anyhow!("Invalid path"))
-        }
+        _ => unreachable!(),
     }
 }
 
-
-fn extract_by_ref<'a>(obj: &'a Value, path: &str) -> Result<&'a Value> {
+fn extract_by_ref<'a>(obj: &'a Value, path: &str) -> Result<Box<dyn Iterator<Item=&'a Value> + 'a>> {
     match (obj, path) {
         (_, path) if path.is_empty() => {
-            Ok(obj)
+            Ok(Box::new(once(obj)))
         }
         (Value::Object(obj), path) => {
             let (key, rest) = next_key(path)?;
@@ -97,11 +99,17 @@ fn extract_by_ref<'a>(obj: &'a Value, path: &str) -> Result<&'a Value> {
         }
         (Value::Array(arr), path ) if path.starts_with("[") => {
             let (key, rest) = next_key(path)?;
-            if path == "[]" {
-                Err(anyhow!("Cannot extract array of arrays"))
+            if key == "[]" {
+                let vec = arr.iter()
+                    .map(|v| extract_by_ref(v, rest))
+                    .collect::<Result<Vec<_>,_>>()?;
+                Ok(Box::new(vec.into_iter().flatten()))
             } else {
-                let index = path[1..path.len() - 1].parse::<usize>()?;
-                let item = arr.get(index).ok_or(anyhow!("Index out of bounds"))?;
+                let mut index = key[1..key.len() - 1].parse::<i64>()?;
+                if index < 0 {
+                    index = arr.len() as i64 + index;
+                }
+                let item = arr.get(index as usize).ok_or(anyhow!("Index out of bounds"))?;
                 extract_by_ref(item, rest)
             }
         }
@@ -114,13 +122,15 @@ fn extract_by_ref<'a>(obj: &'a Value, path: &str) -> Result<&'a Value> {
 fn apply_command(obj: Value, command: &Command, option: &Options) -> Result<()> {
     match command {
         Extract { path } => {
-            let obj = extract(obj, path)?;
-            if obj.as_str().is_some() {
-                println!("{}", obj.as_str().unwrap());
-            } else if option.pretty {
-                println!("{}", serde_json::to_string_pretty(&obj)?);
-            } else {
-                println!("{}", serde_json::to_string(&obj)?);
+            let obj = extract_by_ref(&obj, path)?;
+            for item in obj {
+                if let Some(s) = item.as_str() {
+                    println!("{}", s);
+                } else if option.pretty {
+                    println!("{}", serde_json::to_string_pretty(item)?);
+                } else {
+                    println!("{}", serde_json::to_string(item)?);
+                }
             }
             Ok(())
         }
@@ -132,7 +142,7 @@ fn apply_command(obj: Value, command: &Command, option: &Options) -> Result<()> 
                 let values = keys.iter()
                     .map(|key| extract_by_ref(&item, key))
                     .collect::<Result<Vec<_>>>()?;
-                let values = values.into_iter()
+                let values = values.into_iter().flatten()
                     .map(|v| {
                         match v {
                             Value::String(s) => s.clone(),
@@ -149,6 +159,15 @@ fn apply_command(obj: Value, command: &Command, option: &Options) -> Result<()> 
             for key in obj.keys() {
                 println!("{}", key);
             }
+            Ok(())
+        }
+        Command::Len => {
+            let len = match obj {
+                Value::Array(arr) => arr.len(),
+                Value::Object(obj) => obj.len(),
+                _ => return Err(anyhow!("Not an array or object")),
+            };
+            println!("{}", len);
             Ok(())
         }
         _ => {
@@ -174,4 +193,22 @@ fn main() -> anyhow::Result<()> {
         apply_command(item?, &command, &options)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+
+    #[test]
+    fn test_next_key() -> Result<()> {
+        assert_eq!(next_key("foo.bar")?, ("foo", "bar"));
+        assert_eq!(next_key("foo.[]")?, ("foo", "[]"));
+        assert_eq!(next_key("foo[]")?, ("foo", "[]"));
+        assert_eq!(next_key("[].foo.baz")?, ("[]", "foo.baz"));
+        assert_eq!(next_key("[0].foo")?, ("[0]", "foo"));
+        assert_eq!(next_key("[0].response.data.list")?, ("[0]", "response.data.list"));
+        assert_eq!(next_key("")?, ("", ""));
+        Ok(())
+    }
 }
