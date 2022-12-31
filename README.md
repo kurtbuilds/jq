@@ -22,7 +22,7 @@ cat data/reviews.json | jq feed.entry | jq csv content.label author.name.label >
 cargo install --git https://github.com/kurtbuilds/jq
 ```
 
-# Why did you name it the same as `stedolan/jq`?
+### Why did you name it the same as `stedolan/jq`?
 
 It's meant to be a drop-in replacement. Rather than use an alias, I just call the executable the same. On my machine, with `brew install jq`, I have both `jq` commands installed:
 
