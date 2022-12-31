@@ -2,6 +2,7 @@
 mod exit_status;
 
 use std::borrow::Cow;
+use std::io::{stdout, Write};
 use std::iter::once;
 use std::ops::Index;
 pub use exit_status::ExitOk;
@@ -9,6 +10,7 @@ pub use exit_status::ExitOk;
 use clap::{Parser, Subcommand, ValueEnum};
 use crate::Command::{Extract, Keys};
 use anyhow::{Result, anyhow};
+use colored_json::ToColoredJson;
 use regex::Regex;
 use serde_json::Value;
 
@@ -127,7 +129,13 @@ fn apply_command(obj: Value, command: &Command, option: &Options) -> Result<()> 
                 if let Some(s) = item.as_str() {
                     println!("{}", s);
                 } else if option.pretty {
-                    println!("{}", serde_json::to_string_pretty(item)?);
+                    let out = stdout();
+                    {
+                        let mut out = out.lock();
+                        colored_json::write_colored_json(item, &mut out)?;
+                        write!(out, "\n")?;
+                        out.flush()?;
+                    }
                 } else {
                     println!("{}", serde_json::to_string(item)?);
                 }

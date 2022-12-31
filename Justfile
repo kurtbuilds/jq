@@ -1,8 +1,10 @@
+set positional-arguments
+
 @help:
     just --list --unsorted
 
 run *ARGS:
-    cargo run {{ARGS}}
+    cargo run -- "$@"
 
 install:
     cargo install --path .
