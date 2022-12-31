@@ -11,9 +11,11 @@ Replacement for `jq`. Why?
 
 Here's an example that shows chaining of `jq` commands, and the `csv` subcommand.
 
-    cat data/reviews.json | jq feed.entry | jq csv content.label author.name.label > ios-reviews.csv
-    # Yes, this is an unnecessary use of cat :) It keeps the command order same as stream order.
-  
+```bash
+cat data/reviews.json | jq feed.entry | jq csv content.label author.name.label > ios-reviews.csv
+# Yes, this is an unnecessary use of cat :) It keeps the command order same as stream order.
+```
+
 ### Differences compared to `stedolan/jq`
 
 - leading `.` is optional
