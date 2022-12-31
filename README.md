@@ -43,7 +43,7 @@ It's meant to be a drop-in replacement. Rather than use an alias, I just call th
 
 ```bash
 $ which -a jq
-/Users/kurt/.cargo/bin/jq
+~/.cargo/bin/jq
 /opt/homebrew/bin/jq
 ```
 
