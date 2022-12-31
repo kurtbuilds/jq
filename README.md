@@ -1,3 +1,18 @@
+<div id="top"></div>
+
+<p align="center">
+<a href="https://github.com/kurtbuilds/jq/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/kurtbuilds/jq.svg?style=flat-square" alt="GitHub Contributors" />
+</a>
+<a href="https://github.com/kurtbuilds/jq/stargazers">
+    <img src="https://img.shields.io/github/stars/kurtbuilds/jq.svg?style=flat-square" alt="Stars" />
+</a>
+<a href="https://github.com/kurtbuilds/jq/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/kurtbuilds/jq/test.yaml?style=flat-square" alt="Build Status" />
+</a>
+
+</p>
+
 # jq
 
 Replacement for `stedolan/jq`. Why?
