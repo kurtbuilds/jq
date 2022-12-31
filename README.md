@@ -17,7 +17,7 @@
 
 Replacement for `stedolan/jq`. Why?
 
-- `csv` command to succinctly and intuitively convert JSON to CSV
+- `csv` subcommand to succinctly and intuitively convert JSON to CSV
 - Handle multiple JSON documents in a single stream. `stedolan/jq` only handles one document at a time.
   This feature enables chaining multiple `jq` commands together, eliminating the need for quoting
   commands, as is the case with the `stedolan/jq`.
