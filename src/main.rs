@@ -12,13 +12,21 @@ use crate::Command::{Extract, Keys};
 use anyhow::{Result, anyhow};
 use colored_json::ToColoredJson;
 use regex::Regex;
+use serde::de::Error;
+use serde::Deserialize;
 use serde_json::Value;
 
+
+#[derive(ValueEnum, Clone, Copy)]
+enum Format {
+    Yaml,
+}
 
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Cli {
     command: Vec<String>,
+    input_format: Option<Format>,
 }
 
 #[derive(Debug)]
@@ -194,8 +202,16 @@ fn main() -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let stdin = stdin.lock();
 
-    let deserializer = serde_json::Deserializer::from_reader(stdin);
-    let iterator = deserializer.into_iter::<serde_json::Value>();
+    let iterator: Box<dyn Iterator<Item=std::result::Result<Value, serde_json::Error>>> = match cli.input_format {
+        None => {
+            let deserializer = serde_json::Deserializer::from_reader(stdin);
+            Box::new(deserializer.into_iter::<serde_json::Value>())
+        }
+        Some(Format::Yaml) => {
+            let deserializer = serde_yaml::Deserializer::from_reader(stdin);
+            Box::new(deserializer.into_iter().map(|v| Value::deserialize(v).map_err(|e| serde_json::Error::custom(e))))
+        }
+    };
 
     for item in iterator {
         apply_command(item?, &command, &options)?;
