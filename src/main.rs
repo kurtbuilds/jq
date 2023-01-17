@@ -7,7 +7,7 @@ use std::iter::once;
 use std::ops::Index;
 pub use exit_status::ExitOk;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum, Args};
 use crate::Command::{Extract, Keys};
 use anyhow::{Result, anyhow};
 use colored_json::ToColoredJson;
@@ -16,17 +16,12 @@ use serde::de::Error;
 use serde::Deserialize;
 use serde_json::Value;
 
-
-#[derive(ValueEnum, Clone, Copy)]
-enum Format {
-    Yaml,
-}
-
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Cli {
     command: Vec<String>,
-    input_format: Option<Format>,
+    #[clap(short, long)]
+    yaml: bool,
 }
 
 #[derive(Debug)]
@@ -195,6 +190,11 @@ fn apply_command(obj: Value, command: &Command, option: &Options) -> Result<()> 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    if atty::is(atty::Stream::Stdin) {
+        eprintln!("Input data must be piped to stdin.");
+        std::process::exit(1);
+    }
+
     let command = cli.command.join(" ");
     let command = evaluate_command(&command)?;
     let options = Options { pretty: true };
@@ -202,19 +202,18 @@ fn main() -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let stdin = stdin.lock();
 
-    let iterator: Box<dyn Iterator<Item=std::result::Result<Value, serde_json::Error>>> = match cli.input_format {
-        None => {
-            let deserializer = serde_json::Deserializer::from_reader(stdin);
-            Box::new(deserializer.into_iter::<serde_json::Value>())
+    if cli.yaml {
+        let deserializer = serde_yaml::Deserializer::from_reader(stdin);
+        for obj in deserializer.into_iter() {
+            let obj = Value::deserialize(obj)?;
+            apply_command(obj, &command, &options)?;
         }
-        Some(Format::Yaml) => {
-            let deserializer = serde_yaml::Deserializer::from_reader(stdin);
-            Box::new(deserializer.into_iter().map(|v| Value::deserialize(v).map_err(|e| serde_json::Error::custom(e))))
+    } else {
+        let deserializer = serde_json::Deserializer::from_reader(stdin);
+        for obj in deserializer.into_iter::<Value>() {
+            let obj = obj?;
+            apply_command(obj, &command, &options)?;
         }
-    };
-
-    for item in iterator {
-        apply_command(item?, &command, &options)?;
     }
     Ok(())
 }
