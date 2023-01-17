@@ -16,12 +16,19 @@ use serde::de::Error;
 use serde::Deserialize;
 use serde_json::Value;
 
+
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Cli {
     command: Vec<String>,
-    #[clap(short, long)]
+
+    /// Parse the input as YAML
+    #[clap(short, long )]
     yaml: bool,
+
+    /// Parse the input as YAML
+    #[clap(short = 'Y', long )]
+    yaml_output: bool,
 }
 
 #[derive(Debug)]
@@ -38,6 +45,7 @@ enum Command {
 
 struct Options {
     pretty: bool,
+    yaml_output: bool,
 }
 
 fn evaluate_command(s: &str) -> Result<Command> {
@@ -131,6 +139,8 @@ fn apply_command(obj: Value, command: &Command, option: &Options) -> Result<()> 
             for item in obj {
                 if let Some(s) = item.as_str() {
                     println!("{}", s);
+                } else if option.yaml_output {
+                    println!("{}", serde_yaml::to_string(&item)?);
                 } else if option.pretty {
                     let out = stdout();
                     {
@@ -197,7 +207,7 @@ fn main() -> anyhow::Result<()> {
 
     let command = cli.command.join(" ");
     let command = evaluate_command(&command)?;
-    let options = Options { pretty: true };
+    let options = Options { pretty: true, yaml_output: cli.yaml_output };
 
     let stdin = std::io::stdin();
     let stdin = stdin.lock();
