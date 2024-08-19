@@ -30,6 +30,10 @@ struct Cli {
     /// Parse the input as YAML
     #[clap(short = 'Y', long)]
     yaml_output: bool,
+
+    /// Parse the input as YAML
+    #[clap(short = 'J', long)]
+    json_output: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -46,7 +50,7 @@ enum StreamCommand {
 enum PrintCommand {
     Yaml,
     Pretty,
-    // Json,
+    Json,
     Keys,
     Len,
     Csv(Vec<(String, String)>),
@@ -74,7 +78,7 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
     // a.b.c -> select a -> select b -> select c -> (default of print json)
     // a[b=5].c -> select a -> filter b=5 -> select c -> (default of print json)
     let mut commands = Vec::new();
-    static TOKENS: &[char] = &[',', '.', '[', ']'];
+    static TOKENS: &[char] = &[',', '.', '[', ']', '\u{29}'];
     static DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
     while !s.is_empty() {
         if s.starts_with([']', ',', '\u{29}']) {
@@ -82,6 +86,9 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
         } else if s.starts_with('.') {
             s = &s[1..];
             let tok = s.split(TOKENS).next().unwrap_or(s);
+            if tok.is_empty() {
+                continue;
+            }
             commands.push(StreamCommand::Key(tok.to_string()));
             s = &s[tok.len()..];
         } else if s.starts_with("keys") {
@@ -249,15 +256,19 @@ fn apply_stream(mut obj: Value, mut stream_command: &[StreamCommand]) -> Box<dyn
                         let Some((key, value)) = f.split_once('=') else {
                             panic!("Invalid filter: {}", f);
                         };
-                        return Box::new(arr.into_iter().filter_map(move |v| {
-                            let Value::Object(mut o) = v else {
-                                return None;
-                            };
-                            let Some(v) = o.remove(key) else {
-                                return None;
-                            };
-                            Some(v).filter(|v| v == value)
-                        }));
+                        let it = arr
+                            .into_iter()
+                            .filter_map(move |v| {
+                                let Value::Object(mut o) = v else {
+                                    return None;
+                                };
+                                let Some(v) = o.remove(key) else {
+                                    return None;
+                                };
+                                Some(v).filter(|v| equal(&v, value))
+                            })
+                            .flat_map(|v| apply_stream(v, stream_command));
+                        return Box::new(it);
                     }
                     Value::Object(o) => {
                         let Some((key, value)) = f.split_once('=') else {
@@ -282,7 +293,6 @@ fn apply_stream(mut obj: Value, mut stream_command: &[StreamCommand]) -> Box<dyn
                         panic!("Expected array or object when using filter {}, encountered: {:?}", f, obj);
                     }
                 }
-
             }
             StreamCommand::Put(k, v) => {
                 let Value::Object(mut o) = obj else {
@@ -310,18 +320,18 @@ fn apply_stream(mut obj: Value, mut stream_command: &[StreamCommand]) -> Box<dyn
                 };
                 return match (start, end) {
                     (Some(start), Some(end)) => {
-                        Box::new(arr.into_iter().skip(start).take(end - start))
+                        Box::new(arr.into_iter().skip(start).take(end - start).flat_map(|v| apply_stream(v, stream_command)))
                     }
                     (Some(start), None) => {
-                        Box::new(arr.into_iter().skip(start))
+                        Box::new(arr.into_iter().skip(start).flat_map(|v| apply_stream(v, stream_command)))
                     }
                     (None, Some(end)) => {
-                        Box::new(arr.into_iter().take(end))
+                        Box::new(arr.into_iter().take(end).flat_map(|v| apply_stream(v, stream_command)))
                     }
                     (None, None) => {
-                        Box::new(arr.into_iter())
+                        Box::new(arr.into_iter().flat_map(|v| apply_stream(v, stream_command)))
                     }
-                }
+                };
             }
         }
     }
@@ -332,6 +342,9 @@ fn apply_print(obj: Value, print: &PrintCommand) {
     match print {
         PrintCommand::Yaml => {
             println!("{}", serde_yaml::to_string(&obj).unwrap());
+        }
+        PrintCommand::Json => {
+            println!("{}", obj);
         }
         PrintCommand::Pretty => {
             if let Some(s) = obj.as_str() {
@@ -398,8 +411,10 @@ fn main() -> Result<()> {
         if cli.yaml_output {
             print = PrintCommand::Yaml;
         }
+        if cli.json_output {
+            print = PrintCommand::Json;
+        }
     }
-
     let deserializer: Box<dyn Iterator<Item=Result<Value>>> = if cli.yaml {
         Box::new(serde_yaml::Deserializer::from_reader(input).map(|v| {
             Value::deserialize(v).map_err(anyhow::Error::from)
@@ -412,8 +427,20 @@ fn main() -> Result<()> {
 
     for obj in deserializer {
         let obj = obj?;
-        for obj in apply_stream(obj, &stream) {
-            apply_print(obj, &print);
+        let mut it = apply_stream(obj, &stream).peekable();
+        let Some(first) = it.next() else {
+            continue;
+        };
+        if print == PrintCommand::Json && it.peek().is_some() {
+            let mut vec = Vec::new();
+            vec.push(first);
+            vec.extend(it);
+            apply_print(Value::Array(vec), &print);
+        } else {
+            apply_print(first, &print);
+            for obj in it {
+                apply_print(obj, &print);
+            }
         }
     }
     Ok(())
