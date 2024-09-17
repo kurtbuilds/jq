@@ -34,13 +34,16 @@ struct Cli {
     /// Parse the input as YAML
     #[clap(short = 'J', long)]
     json_output: bool,
+
+    #[clap(short, long)]
+    raw: bool,
 }
 
 #[derive(Debug, PartialEq)]
 enum StreamCommand {
     Key(String),
     Index(usize),
-    Range(Option<usize>, Option<usize>),
+    Range(Option<i64>, Option<i64>),
     Filter(String),
     Put(String, String),
     Delete(String),
@@ -79,10 +82,14 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
     // a[b=5].c -> select a -> filter b=5 -> select c -> (default of print json)
     let mut commands = Vec::new();
     static TOKENS: &[char] = &[',', '.', '[', ']', '\u{29}'];
-    static DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    static DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-'];
     while !s.is_empty() {
-        if s.starts_with([']', ',', '\u{29}']) {
+        if s.starts_with([']', ',', '\u{29}', ' ']) {
             s = &s[1..];
+        } else if s.starts_with("..") {
+            let end = s[2..].parse().unwrap();
+            commands.push(StreamCommand::Range(None, Some(end)));
+            s = &s[2 + end.to_string().len()..];
         } else if s.starts_with('.') {
             s = &s[1..];
             let tok = s.split(TOKENS).next().unwrap_or(s);
@@ -115,9 +122,9 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
                 let start = tok.parse().unwrap();
                 tok = &s[tok.len() + 2..];
                 let tok = tok.split(TOKENS).next().unwrap_or(tok);
-                let end = tok.parse().unwrap();
+                let end = tok.parse().ok();
                 // its a range
-                commands.push(StreamCommand::Range(Some(start), Some(end)));
+                commands.push(StreamCommand::Range(Some(start), end));
                 s = &s[first_token.len() + 2 + tok.len()..];
             } else {
                 commands.push(StreamCommand::Index(tok.parse().unwrap()));
@@ -130,13 +137,17 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
                 commands.push(StreamCommand::Range(None, None));
             } else if filter.starts_with(DIGITS) {
                 if let Some((start, end)) = filter.split_once("..") {
+                    dbg!(start, end);
                     let start = start.parse().unwrap();
-                    let end = end.parse().unwrap();
-                    commands.push(StreamCommand::Range(Some(start), Some(end)));
+                    let end = end.parse().ok();
+                    commands.push(StreamCommand::Range(Some(start), end));
                 } else {
                     let index = filter.parse().unwrap();
                     commands.push(StreamCommand::Index(index));
                 }
+            } else if filter.starts_with("..") {
+                let end = filter[2..].parse().unwrap();
+                commands.push(StreamCommand::Range(None, Some(end)));
             } else {
                 for f in filter.split([',', '\u{29}']) {
                     commands.push(StreamCommand::Filter(f.to_string()));
@@ -150,6 +161,7 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
                 commands.push(StreamCommand::Delete(key.to_string()));
             }
             s = &s[delete.len()..];
+
         } else {
             let tok = s.split(TOKENS).next().unwrap_or(s);
             commands.push(StreamCommand::Key(tok.to_string()));
@@ -233,6 +245,14 @@ fn equal(value: &Value, other: &str) -> bool {
         Value::Null => other == "null",
         _ => false,
     }
+}
+
+fn normalize(n: i64, arr: &Vec<Value>) -> usize {
+    (if n < 0 {
+        arr.len() as i64 + n
+    } else {
+        n
+    }) as usize
 }
 
 fn apply_stream(mut obj: Value, mut stream_command: &[StreamCommand]) -> Box<dyn Iterator<Item=Value> + '_> {
@@ -320,12 +340,16 @@ fn apply_stream(mut obj: Value, mut stream_command: &[StreamCommand]) -> Box<dyn
                 };
                 return match (start, end) {
                     (Some(start), Some(end)) => {
+                        let start = normalize(start, &arr);
+                        let end = normalize(end, &arr);
                         Box::new(arr.into_iter().skip(start).take(end - start).flat_map(|v| apply_stream(v, stream_command)))
                     }
                     (Some(start), None) => {
+                        let start = normalize(start, &arr);
                         Box::new(arr.into_iter().skip(start).flat_map(|v| apply_stream(v, stream_command)))
                     }
                     (None, Some(end)) => {
+                        let end = normalize(end, &arr);
                         Box::new(arr.into_iter().take(end).flat_map(|v| apply_stream(v, stream_command)))
                     }
                     (None, None) => {
@@ -414,6 +438,9 @@ fn main() -> Result<()> {
         if cli.json_output {
             print = PrintCommand::Json;
         }
+        if cli.raw {
+            print = PrintCommand::Json;
+        }
     }
     let deserializer: Box<dyn Iterator<Item=Result<Value>>> = if cli.yaml {
         Box::new(serde_yaml::Deserializer::from_reader(input).map(|v| {
@@ -469,5 +496,21 @@ mod tests {
         let (commands, print) = evaluate_command("foo, keys");
         assert_eq!(commands, vec![StreamCommand::Key("foo".to_string())]);
         assert_eq!(print, PrintCommand::Keys);
+    }
+
+    #[test]
+    fn test_eval_command() {
+        let (commands, _) = evaluate_command("[0..5]");
+        assert_eq!(commands, vec![StreamCommand::Range(Some(0), Some(5))]);
+        let (commands, _) = evaluate_command("[..5]");
+        assert_eq!(commands, vec![StreamCommand::Range(None, Some(5))]);
+        let (commands, _) = evaluate_command("[..-5]");
+        assert_eq!(commands, vec![StreamCommand::Range(None, Some(-5))]);
+        let (commands, _) = evaluate_command("[-5..]");
+        assert_eq!(commands, vec![StreamCommand::Range(Some(-5), None)]);
+        let (commands, _) = evaluate_command("..5");
+        assert_eq!(commands, vec![StreamCommand::Range(None, Some(5))]);
+        let (commands, _) = evaluate_command("5..");
+        assert_eq!(commands, vec![StreamCommand::Range(Some(5), None)]);
     }
 }
