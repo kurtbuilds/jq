@@ -487,15 +487,17 @@ fn main() -> Result<()> {
 
     if let Some(dest) = &cli.in_place {
         let mut file = File::create(&dest).unwrap();
-        if cli.yaml {
-            for obj in deserializer {
-                let obj = obj?;
-                serde_yaml::to_writer(&mut file, &obj).unwrap();
-            }
-        } else {
-            for obj in deserializer {
-                let obj = obj?;
-                serde_json::to_writer(&mut file, &obj).unwrap();
+        for obj in deserializer {
+            let obj = obj?;
+            let mut it = apply_stream(obj, &stream).peekable();
+            for obj in it {
+                if cli.yaml {
+                    serde_yaml::to_writer(&mut file, &obj).unwrap();
+                } else if cli.json_output {
+                    serde_json::to_writer(&mut file, &obj).unwrap();
+                } else {
+                    serde_json::to_writer_pretty(&mut file, &obj).unwrap();
+                }
             }
         }
         return Ok(())
