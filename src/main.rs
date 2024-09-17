@@ -1,21 +1,20 @@
 #![allow(unused)]
-mod exit_status;
-
 use std::borrow::Cow;
+use std::env::args;
 use std::fs::File;
 use std::io;
 use std::io::{stdout, IsTerminal, Read, Write};
 use std::iter::{empty, once};
 use std::ops::Index;
-pub use exit_status::ExitOk;
 
-use clap::{Parser, Subcommand, ValueEnum, Args};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use colored_json::ToColoredJson;
 use regex::Regex;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+use regex::regex;
 
 
 #[derive(Parser)]
@@ -27,14 +26,16 @@ struct Cli {
     #[clap(short, long)]
     yaml: bool,
 
-    /// Parse the input as YAML
+    /// Output the result as YAML
     #[clap(short = 'Y', long)]
     yaml_output: bool,
 
-    /// Parse the input as YAML
+    /// Output the result as JSON. The default pretty prints the results, unpacks arrays,
+    /// and prints unquoted strings
     #[clap(short = 'J', long)]
     json_output: bool,
 
+    /// An alias for json-output
     #[clap(short, long)]
     raw: bool,
 }
@@ -417,10 +418,25 @@ fn apply_print(obj: Value, print: &PrintCommand) {
 }
 
 fn main() -> Result<()> {
-    let mut cli = Cli::parse();
+    // munge the args to insert -- before any negative numbers
+    let mut args: Vec<String> = args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--" {
+            break;
+        }
+        let re = regex!(r#"^-\d+"#);
+        if re.is_match(&args[i]) {
+            args.insert(i, "--".to_string());
+            break;
+        }
+    }
+    let mut cli = Cli::parse_from(args);
 
     let command = cli.command.join("\u{29}");
     let input: Box<dyn Read> = if io::stdin().is_terminal() {
+        if cli.command.is_empty() {
+            Cli::parse_from(vec![env!("CARGO_BIN_NAME"), "--help"]);
+        }
         let filename = cli.command.remove(0);
         let file = File::open(&filename).unwrap();
         Box::new(io::BufReader::new(file))
@@ -476,7 +492,6 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Result;
 
     #[test]
     fn test_evaluate_command() {
@@ -512,5 +527,7 @@ mod tests {
         assert_eq!(commands, vec![StreamCommand::Range(None, Some(5))]);
         let (commands, _) = evaluate_command("5..");
         assert_eq!(commands, vec![StreamCommand::Range(Some(5), None)]);
+        let (commands, _) = evaluate_command("-5..");
+        assert_eq!(commands, vec![StreamCommand::Range(Some(-5), None)]);
     }
 }
