@@ -38,6 +38,14 @@ struct Cli {
     /// An alias for json-output
     #[clap(short, long)]
     raw: bool,
+
+    /// When you read data streaming and
+    #[clap(short, long)]
+    bulk: bool,
+
+    /// When you read data streaming and
+    #[clap(short, long)]
+    in_place: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -162,7 +170,6 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
                 commands.push(StreamCommand::Delete(key.to_string()));
             }
             s = &s[delete.len()..];
-
         } else {
             let tok = s.split(TOKENS).next().unwrap_or(s);
             commands.push(StreamCommand::Key(tok.to_string()));
@@ -418,7 +425,7 @@ fn apply_print(obj: Value, print: &PrintCommand) {
 }
 
 fn main() -> Result<()> {
-    // munge the args to insert -- before any negative numbers
+    // munge the args to insert -- before any negative numbers to fix clap's parsing
     let mut args: Vec<String> = args().collect();
     for i in 0..args.len() {
         if args[i] == "--" {
@@ -432,18 +439,28 @@ fn main() -> Result<()> {
     }
     let mut cli = Cli::parse_from(args);
 
-    let command = cli.command.join("\u{29}");
-    let input: Box<dyn Read> = if io::stdin().is_terminal() {
+    let mut input: Box<dyn Read> = if io::stdin().is_terminal() {
         if cli.command.is_empty() {
             Cli::parse_from(vec![env!("CARGO_BIN_NAME"), "--help"]);
+            panic!("No command provided");
+        } else if let Some(i) = &cli.in_place {
+            let file = File::open(&i).unwrap();
+            Box::new(io::BufReader::new(file))
+        } else {
+            let filename = cli.command.remove(0);
+            let file = File::open(&filename).unwrap();
+            Box::new(io::BufReader::new(file))
         }
-        let filename = cli.command.remove(0);
-        let file = File::open(&filename).unwrap();
-        Box::new(io::BufReader::new(file))
     } else {
         let stdin = io::stdin();
         Box::new(stdin.lock())
     };
+
+    if cli.bulk || cli.in_place.is_some() {
+        let mut buf = String::new();
+        input.read_to_string(&mut buf).expect("Failed to read input");
+        input = Box::new(io::Cursor::new(buf));
+    }
 
     let command = cli.command.join("\u{29}");
     let (stream, mut print) = evaluate_command(&command);
@@ -467,6 +484,22 @@ fn main() -> Result<()> {
             v.map_err(anyhow::Error::from)
         }))
     };
+
+    if let Some(dest) = &cli.in_place {
+        let mut file = File::create(&dest).unwrap();
+        if cli.yaml {
+            for obj in deserializer {
+                let obj = obj?;
+                serde_yaml::to_writer(&mut file, &obj).unwrap();
+            }
+        } else {
+            for obj in deserializer {
+                let obj = obj?;
+                serde_json::to_writer(&mut file, &obj).unwrap();
+            }
+        }
+        return Ok(())
+    }
 
     for obj in deserializer {
         let obj = obj?;
