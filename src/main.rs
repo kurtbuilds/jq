@@ -65,7 +65,18 @@ enum PrintCommand {
     Json,
     Keys,
     Len,
-    Csv(Vec<(String, String)>),
+    Csv(Vec<(String, String)>, bool),
+}
+
+impl PrintCommand {
+    pub fn turn_off_headers(&mut self) {
+        match self {
+            PrintCommand::Csv(_, print_headers) => {
+                *print_headers = false;
+            }
+            _ => {}
+        }
+    }
 }
 
 fn split_headers(s: &str) -> Vec<(String, String)> {
@@ -112,8 +123,12 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
         } else if s.starts_with("len") {
             return (commands, PrintCommand::Len);
         } else if s.starts_with("csv") {
-            let mut keys = split_headers(&s[4..]);
-            return (commands, PrintCommand::Csv(keys));
+            return if s.len() >= 4 {
+                (commands, PrintCommand::Csv(Vec::new(), true))
+            } else {
+                let mut keys = split_headers(&s[4..]);
+                (commands, PrintCommand::Csv(keys, true))
+            };
         } else if s.starts_with("put") {
             s = &s[4..];
             let put = s.split(',').next().unwrap_or(s);
@@ -178,68 +193,6 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
     }
     (commands, PrintCommand::Pretty)
 }
-
-
-// fn next_key(s: &str) -> Result<(&str, &str)> {
-//     if s == "" {
-//         return Ok(("", ""));
-//     }
-//     let Some(idx) = s.find(['.', '[']) else {
-//         return Ok((s, ""));
-//     };
-//     match s.chars().nth(idx).unwrap() {
-//         '.' => {
-//             let (key, rest) = s.split_at(idx);
-//             Ok((key, &rest[1..]))
-//         }
-//         '[' => {
-//             if idx == 0 {
-//                 match s.find('.') {
-//                     None => Ok((s, "")),
-//                     Some(idx) => {
-//                         let (key, rest) = s.split_at(idx);
-//                         Ok((key, &rest[1..]))
-//                     }
-//                 }
-//             } else {
-//                 Ok(s.split_at(idx))
-//             }
-//         }
-//         _ => unreachable!(),
-//     }
-// }
-//
-// fn extract_by_ref<'a>(obj: &'a Value, path: &str) -> Result<Box<dyn Iterator<Item=&'a Value> + 'a>> {
-//     match (obj, path) {
-//         (_, path) if path.is_empty() => {
-//             Ok(Box::new(once(obj)))
-//         }
-//         (Value::Object(obj), path) => {
-//             let (key, rest) = next_key(path)?;
-//             let item = obj.get(key).ok_or(anyhow!("No such key: {}", key))?;
-//             extract_by_ref(&item, rest)
-//         }
-//         (Value::Array(arr), path) if path.starts_with("[") => {
-//             let (key, rest) = next_key(path)?;
-//             if key == "[]" {
-//                 let vec = arr.iter()
-//                     .map(|v| extract_by_ref(v, rest))
-//                     .collect::<Result<Vec<_>, _>>()?;
-//                 Ok(Box::new(vec.into_iter().flatten()))
-//             } else {
-//                 let mut index = key[1..key.len() - 1].parse::<i64>()?;
-//                 if index < 0 {
-//                     index = arr.len() as i64 + index;
-//                 }
-//                 let item = arr.get(index as usize).ok_or(anyhow!("Index out of bounds"))?;
-//                 extract_by_ref(item, rest)
-//             }
-//         }
-//         _ => {
-//             Err(anyhow!("Invalid path"))
-//         }
-//     }
-// }
 
 fn parse_json(s: &str) -> Value {
     serde_json::from_str(s).unwrap_or(Value::String(s.to_string()))
@@ -405,21 +358,47 @@ fn apply_print(obj: Value, print: &PrintCommand) {
             };
             println!("{}", len);
         }
-        PrintCommand::Csv(pairs) => {
+        PrintCommand::Csv(pairs, print_headers) => {
             let (selectors, headers): (Vec<_>, Vec<_>) = pairs.into_iter().cloned().unzip();
             let mut csv = csv::Writer::from_writer(stdout());
-            csv.write_record(selectors.iter()).unwrap();
-            let obj = obj.as_object().expect("Not an object");
-            let values = selectors.iter()
-                .map(|k| {
-                    let v = obj.get(k).unwrap_or(&Value::Null);
-                    match v {
-                        Value::String(s) => Cow::Borrowed(s.as_bytes()),
-                        z => Cow::Owned(serde_json::to_vec(z).unwrap())
+            if *print_headers {
+                csv.write_record(headers.iter()).unwrap();
+            }
+            match &obj {
+                Value::Array(vec) => {
+                    for value in vec {
+                        let values = selectors.iter()
+                            .map(|k| {
+                                let v = obj.get(k).unwrap_or(&Value::Null);
+                                match v {
+                                    Value::String(s) => Cow::Borrowed(s.as_bytes()),
+                                    Value::Number(n) => Cow::Owned(n.to_string().into_bytes()),
+                                    Value::Bool(b) => Cow::Owned(b.to_string().into_bytes()),
+                                    z => Cow::Owned(serde_json::to_vec(z).unwrap())
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        csv.write_record(values).unwrap();
                     }
-                })
-                .collect::<Vec<_>>();
-            csv.write_record(values).unwrap();
+                }
+                Value::Object(map) => {
+                    let values = selectors.iter()
+                        .map(|k| {
+                            let v = obj.get(k).unwrap_or(&Value::Null);
+                            match v {
+                                Value::String(s) => Cow::Borrowed(s.as_bytes()),
+                                Value::Number(n) => Cow::Owned(n.to_string().into_bytes()),
+                                Value::Bool(b) => Cow::Owned(b.to_string().into_bytes()),
+                                z => Cow::Owned(serde_json::to_vec(z).unwrap())
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    csv.write_record(values).unwrap();
+                }
+                _ => {
+                    panic!("Not an array or object");
+                }
+            }
         }
     }
 }
@@ -516,6 +495,7 @@ fn main() -> Result<()> {
             apply_print(Value::Array(vec), &print);
         } else {
             apply_print(first, &print);
+            print.turn_off_headers();
             for obj in it {
                 apply_print(obj, &print);
             }
