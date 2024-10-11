@@ -77,14 +77,36 @@ impl PrintCommand {
             _ => {}
         }
     }
+
+    pub fn add_headers(&mut self, value: &Value) {
+        match value {
+            Value::Array(a) => {
+                self.add_headers(a.first().expect("Empty array"));
+            }
+            Value::Object(o) => {
+                match self {
+                    PrintCommand::Csv(headers, _) => {
+                        if headers.is_empty() {
+                            for key in o.keys() {
+                                headers.push((key.clone(), key.clone()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn split_headers(s: &str) -> Vec<(String, String)> {
     s.split([',', '\u{29}'])
-        .map(|s| s.split_once('=').unwrap_or_else(|| {
-            let h = s.rsplit_once([']', '.']).map(|s| s.1).unwrap_or(s);
-            (s, h)
-        }))
+        .map(|s| s.split_once('=')
+            .or_else(|| s.split_once(" as "))
+            .or_else(|| s.rsplit_once([']', '.']).map(|t| (s, t.1)))
+            .unwrap_or((s, s))
+        )
         .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
         .collect()
 }
@@ -123,7 +145,7 @@ fn evaluate_command(mut s: &str) -> (Vec<StreamCommand>, PrintCommand) {
         } else if s.starts_with("len") {
             return (commands, PrintCommand::Len);
         } else if s.starts_with("csv") {
-            return if s.len() >= 4 {
+            return if s.len() <= 4 {
                 (commands, PrintCommand::Csv(Vec::new(), true))
             } else {
                 let mut keys = split_headers(&s[4..]);
@@ -366,14 +388,12 @@ fn apply_print(obj: Value, print: &PrintCommand) {
             }
             match &obj {
                 Value::Array(vec) => {
-                    for value in vec {
+                    for obj in vec {
                         let values = selectors.iter()
                             .map(|k| {
                                 let v = obj.get(k).unwrap_or(&Value::Null);
                                 match v {
                                     Value::String(s) => Cow::Borrowed(s.as_bytes()),
-                                    Value::Number(n) => Cow::Owned(n.to_string().into_bytes()),
-                                    Value::Bool(b) => Cow::Owned(b.to_string().into_bytes()),
                                     z => Cow::Owned(serde_json::to_vec(z).unwrap())
                                 }
                             })
@@ -387,8 +407,6 @@ fn apply_print(obj: Value, print: &PrintCommand) {
                             let v = obj.get(k).unwrap_or(&Value::Null);
                             match v {
                                 Value::String(s) => Cow::Borrowed(s.as_bytes()),
-                                Value::Number(n) => Cow::Owned(n.to_string().into_bytes()),
-                                Value::Bool(b) => Cow::Owned(b.to_string().into_bytes()),
                                 z => Cow::Owned(serde_json::to_vec(z).unwrap())
                             }
                         })
@@ -479,7 +497,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-        return Ok(())
+        return Ok(());
     }
 
     for obj in deserializer {
@@ -494,6 +512,7 @@ fn main() -> Result<()> {
             vec.extend(it);
             apply_print(Value::Array(vec), &print);
         } else {
+            print.add_headers(&first);
             apply_print(first, &print);
             print.turn_off_headers();
             for obj in it {
